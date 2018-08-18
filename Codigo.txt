@@ -1,0 +1,130 @@
+#include <Servo.h>
+#include "I2Cdev.h"
+#include "MPU6050_6Axis_MotionApps20.h"
+#if I2CDEV_IMPLEMENTATION == I2CDEV_ARDUINO_WIRE
+#include "Wire.h"
+#endif
+// se AD0 estiver em low = 0x68
+// se AD0 estiver em high = 0x69
+MPU6050 mpu;
+Servo myservoY; // Roll
+Servo myservoX; // Pitch
+Servo myservoZ; // Yaw
+//MPU6050 mpu(0x69); // <-- tirar comentário caso AD0 = high
+#define OUTPUT_READABLE_YAWPITCHROLL
+#define LED_PIN 13
+bool blinkState = false;
+// variáveis de controle/status do MPU
+bool dmpReady = false;
+uint8_t mpuIntStatus;
+uint8_t devStatus;
+uint16_t packetSize;
+uint16_t fifoCount;
+uint8_t fifoBuffer[64];
+// Variáveis de orientação/movimento
+Quaternion q; // [w, x, y, z]
+VectorInt16 aa; // [x, y, z]
+VectorInt16 aaReal; // [x, y, z]
+VectorInt16 aaWorld; // [x, y, z]
+VectorFloat gravity; // [x, y, z]
+float euler[3]; // [psi, theta, phi]
+float ypr[3]; // [yaw, pitch, roll]
+uint8_t teapotPacket[14] = { '$', 0x02, 0,0, 0,0, 0,0, 0,0, 0x00, 0x00, '\r', '\n' };
+volatile bool mpuInterrupt = false;
+void dmpDataReady() {
+mpuInterrupt = true;
+}
+void setup() {
+#if I2CDEV_IMPLEMENTATION == I2CDEV_ARDUINO_WIRE
+Wire.begin();
+TWBR = 24; // clock de 400kHz no I2C (definir 200kHz para CPU de 8MHz)
+#elif I2CDEV_IMPLEMENTATION == I2CDEV_BUILTIN_FASTWIRE
+Fastwire::setup(400, true);
+#endif
+//Define portas dos servos
+myservoY.attach(3); // Eixo Y no pino 9
+myservoX.attach(5);// Eixo X no pino 10
+myservoZ.attach(6); // Eixo Z no pino 11
+Serial.begin(115200);
+Serial.println(F("Inicializando dispositivos I2C..."));
+mpu.initialize();
+// verifica conexão
+Serial.println(F("Testando conexão com os dispositivos..."));
+Serial.println(mpu.testConnection() ? F("Conectado ao MPU6050 com sucesso") : F("Falha ao conectar ao MPU6050"));
+// carrega e configura o DMP
+Serial.println(F("Inicializando DMP..."));
+devStatus = mpu.dmpInitialize();
+// definidos os valores de offset
+mpu.setXGyroOffset(220);
+mpu.setYGyroOffset(76);
+mpu.setZGyroOffset(85);
+mpu.setZAccelOffset(1788);
+// garante que etapa anterior tenha terminado
+if (devStatus == 0) {
+// liga o DMP
+Serial.println(F("Habilitando DMP..."));
+mpu.setDMPEnabled(true);
+// Habilita detecção de interrupções
+Serial.println(F("Habilitando detecção de interrupção (Arduino external interrupt 0)..."));
+attachInterrupt(0, dmpDataReady, RISING);
+mpuIntStatus = mpu.getIntStatus();
+// marca DMP como pronto para uso
+Serial.println(F("DMP pronto! Aguardando primeira interrupção..."));
+dmpReady = true;
+// pega tamanho de pacote esperado
+packetSize = mpu.dmpGetFIFOPacketSize();
+} else {
+// ERRORS!
+// 1 = erro ao carregar memoria inicial
+// 2 = Configuração do DMP falhou
+Serial.print(F("Inicialização do DMP falhou (código "));
+Serial.print(devStatus);
+Serial.println(F(")"));
+}
+// configura saída do LED
+pinMode(LED_PIN, OUTPUT);
+}
+void loop() {
+// Em caso de falha encerra o programa
+if (!dmpReady) return;
+// aguarda por MPU interrupt ou pacote extra disponivel
+while (!mpuInterrupt && fifoCount < packetSize) {
+// Espaço para programa caso Interrupt = true
+}
+// reseta marcador de interrupt and lê o byte INT_STATUS
+mpuInterrupt = false;
+mpuIntStatus = mpu.getIntStatus();
+// lê a contagem de FIFO atual
+fifoCount = mpu.getFIFOCount();
+// checa se há overflow
+if ((mpuIntStatus & 0x10) || fifoCount == 1024) {
+// reinicia o FIFO
+mpu.resetFIFO();
+Serial.println(F("FIFO overflow!"));
+// checa se DMP está disponível
+} else if (mpuIntStatus & 0x02) {
+// aguarda entrada correta dos dados
+while (fifoCount < packetSize) fifoCount = mpu.getFIFOCount();
+// le um pacote do FIFO
+mpu.getFIFOBytes(fifoBuffer, packetSize);
+fifoCount -= packetSize;
+#ifdef OUTPUT_READABLE_YAWPITCHROLL
+// mostra angulos de Euler em graus
+mpu.dmpGetQuaternion(&q, fifoBuffer);
+mpu.dmpGetGravity(&gravity, &q);
+mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);
+Serial.print("ypr\t");
+Serial.print(ypr[0] * 180/M_PI);
+myservoZ.write(int(ypr[0] * -180/M_PI)+90); //Rotação eixo Z
+Serial.print("\t");
+Serial.print(ypr[1] * 180/M_PI);
+myservoY.write(int(ypr[1] * -180/M_PI)+90); // Rotação eixo Y
+Serial.print("\t");
+Serial.println(ypr[2] * 180/M_PI);
+myservoX.write(int(ypr[2] * -180/M_PI)+90); // Rotação eixo X
+#endif
+// Led indica atividade
+blinkState = !blinkState;
+digitalWrite(LED_PIN, blinkState);
+}
+}
